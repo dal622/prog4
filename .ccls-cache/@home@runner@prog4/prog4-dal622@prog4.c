@@ -18,7 +18,8 @@
 #define N 4096
 
 /* Global variable shared between the main process and the signal handler */
-volatile int sum = 0;
+volatile sig_atomic_t sum = 0;
+volatile sig_atomic_t num_signals = 0;
 
 /* function to initialize an array of integers */
 void initialize(int *);
@@ -57,48 +58,64 @@ int main() {
    * with signal SIGUSR2 and exit after that */
   /* reap the child processes */
 
+  // Block the SIGUSR2 signal
+  sigset_t mask;
+  Sigemptyset(&mask);
+  sigaddset(&mask, SIGUSR2);
+  Sigprocmask(SIG_BLOCK, &mask, NULL);
+
   for (int i = 0; i < P - 1; i++) { // create P - 1 child processes
-    pid_t pid = fork();
-    // pid_t pid = wait(&status);
-    if (pid < 0) { // check fork error
-      perror("fork");
-      exit(100 + i);
-    } else if (pid == 0) {
+    pid_t pid = Fork();
+    if (pid == 0) {
+      // child processes need to calculate the partial sum by adding elements
+      // from index x to index y
       int partial_sum = 0;
-      fprintf(stderr,"Child process %d adding the elements from index %d to %d\n",
-             getpid(), i * N / P, (i + 1) * N / P);
+      fprintf(stderr,
+              "Child process %d adding the elements from index %d to %d\n",
+              getpid(), i * N / P, (i + 1) * N / P);
+
       for (int j = i * N / P; j < (i + 1) * N / P; j++) {
         partial_sum += A[j];
       }
+
+      // child processes send signal back to parent with calculated partial sum
       union sigval value;
       value.sival_int = partial_sum;
-      fprintf(stderr,"Child process %d sending SIGUSR2 to parent process with the "
-             "partial sum %d\n",
-             getpid(), partial_sum);
-      sigqueue(getppid(), SIGUSR2, value);
+      fprintf(stderr,
+              "Child process %d sending SIGUSR2 to parent process with the "
+              "partial sum %d\n",
+              getpid(), partial_sum);
+
+      // send signal back to parent
+      Sigqueue(getppid(), SIGUSR2, value);
+
       exit(0);
     }
+    // Unblock the SIGUSR2 signal
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
   }
 
+  // Wait for all child processes to finish sending signals
+  while (num_signals < P - 1) {
+    sleep(1);
+  }
+
+  // reap child processes
   int status;
-  for (int i = 0; i < P - 1; i++){
-    pid_t wpid = wait(&status);
-    if (wpid > 0) {
-      if (WIFEXITED(status)) {
-        printf("Child process %d terminated normally with exit status %d\n",
-               wpid, WEXITSTATUS(status));
-      } else {
-        printf("Child process %d terminated abnormally\n", wpid);
-      }
-    }
+  for (int i = 0; i < P - 1; i++) {
+    sleep(2);
+    Wait(&status);
   }
 
+  // Parent process
   int partial_sum = 0;
   fprintf(stderr, "Parent process %d adding the elements from index %d to %d\n",
-         getpid(), (P - 1) * N / P, N);
+          getpid(), (P - 1) * N / P, N);
   for (int i = (P - 1) * N / P; i < N; i++) {
     partial_sum += A[i];
   }
+
+  fprintf(stderr, "Parent process sum = %d\n", partial_sum);
 
   sum += partial_sum;
 
@@ -114,9 +131,12 @@ void initialize(int *M) {
 /* Definition of the wrapper system call functions */
 /* see the prototypes at the beginning of the file */
 void sigusr2_handler(int sig, siginfo_t *info, void *context) {
+  // when parent gets a signal we want to update the global sum to include the
+  // partial sum
   sum += info->si_value.sival_int;
   printf("Parent process caught SIGUSR2 with partial sum: %d\n",
          info->si_value.sival_int);
+  num_signals++;
 }
 
 pid_t Fork() {
@@ -129,8 +149,15 @@ pid_t Fork() {
 
 pid_t Wait(int *status) {
   pid_t pid = wait(status);
-  if (pid < 0) {
-    unix_error("wait error");
+  if (pid > 0) {
+    if (WIFEXITED(*status)) {
+      printf("Child process %d terminated normally with exit status %d\n", pid,
+             WEXITSTATUS(*status));
+    } else {
+      printf("Child process %d terminated abnormally\n", pid);
+    }
+  } else {
+    printf("Child process %d terminated abnormally\n", pid);
   }
   return pid;
 }
@@ -147,7 +174,8 @@ pid_t Waitpid(pid_t pid, int *status, int options) {
   return ret_pid;
 }
 
-int Sigqueue(pid_t pid, int signum, union sigval value) {
+int Sigqueue(pid_t pid, int signum,
+             union sigval value) { // Sigqueue(getppid(), SIGUSR2, value);
   int ret = sigqueue(pid, signum, value);
   if (ret < 0) {
     unix_error("sigqueue error");
@@ -203,8 +231,6 @@ ssize_t Read(int d, void *buffer, size_t nbytes) {
   }
   return ret;
 }
-
-typedef void handler_t;
 
 handler_t *Signal(int signum, handler_t *handler) {
   struct sigaction new_act, old_act;
