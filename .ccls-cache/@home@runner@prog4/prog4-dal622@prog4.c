@@ -42,6 +42,7 @@ void sigusr2_handler(int sig, siginfo_t *info, void *context);
 
 /* main function */
 int main() {
+  // initialize array A[] such that each subsequent number is +1 the previous
   int A[N];
   initialize(A);
   /* install the SIGUSR2 handler using Signal (portable handler) */
@@ -50,13 +51,7 @@ int main() {
   sa.sa_flags = SA_SIGINFO;
   sa.sa_sigaction = sigusr2_handler;
   sigemptyset(&sa.sa_mask);
-  sigaction(SIGUSR2, &sa, NULL);
-  /* create (P-1) processes (macro P defined at compile time) */
-  /* make each process compute its own partial sum (parent and P-1 child
-   * processes) */
-  /* make each process send the partial sum to the parent process using sigqueue
-   * with signal SIGUSR2 and exit after that */
-  /* reap the child processes */
+  Sigaction(SIGUSR2, &sa, NULL);
 
   // Block the SIGUSR2 signal
   sigset_t mask;
@@ -64,9 +59,10 @@ int main() {
   sigaddset(&mask, SIGUSR2);
   Sigprocmask(SIG_BLOCK, &mask, NULL);
 
-  for (int i = 0; i < P - 1; i++) { // create P - 1 child processes
+  /* create (P-1) processes (macro P defined at compile time) */
+  for (int i = 0; i < P - 1; i++) {
     pid_t pid = Fork();
-    if (pid == 0) {
+    if (pid == 0) { // child process
       // child processes need to calculate the partial sum by adding elements
       // from index x to index y
       int partial_sum = 0;
@@ -81,10 +77,6 @@ int main() {
       // child processes send signal back to parent with calculated partial sum
       union sigval value;
       value.sival_int = partial_sum;
-      fprintf(stderr,
-              "Child process %d sending SIGUSR2 to parent process with the "
-              "partial sum %d\n",
-              getpid(), partial_sum);
 
       // send signal back to parent
       Sigqueue(getppid(), SIGUSR2, value);
@@ -92,7 +84,7 @@ int main() {
       exit(0);
     }
     // Unblock the SIGUSR2 signal
-    sigprocmask(SIG_UNBLOCK, &mask, NULL);
+    Sigprocmask(SIG_UNBLOCK, &mask, NULL);
   }
 
   // Wait for all child processes to finish sending signals
@@ -103,7 +95,7 @@ int main() {
   // reap child processes
   int status;
   for (int i = 0; i < P - 1; i++) {
-    sleep(2);
+    sleep(3);
     Wait(&status);
   }
 
@@ -111,34 +103,41 @@ int main() {
   int partial_sum = 0;
   fprintf(stderr, "Parent process %d adding the elements from index %d to %d\n",
           getpid(), (P - 1) * N / P, N);
+  // Parent process adds the last section of the array and saves into
+  // partial_sum
   for (int i = (P - 1) * N / P; i < N; i++) {
     partial_sum += A[i];
   }
 
   fprintf(stderr, "Parent process sum = %d\n", partial_sum);
 
+  // Parent process updates the global sum variable and prints out the result
   sum += partial_sum;
-
   fprintf(stderr, "Final Sum = %d\n", sum);
+
   return 0;
 }
 
+/* this method initializes the array such that each subsequent element is one
+ * more than the last */
 void initialize(int *M) {
   for (int i = 0; i < N; i++) {
     M[i] = i + 1;
   }
 }
-/* Definition of the wrapper system call functions */
-/* see the prototypes at the beginning of the file */
+
+/* this method handles the signal sent by the child process(es) */
 void sigusr2_handler(int sig, siginfo_t *info, void *context) {
   // when parent gets a signal we want to update the global sum to include the
   // partial sum
   sum += info->si_value.sival_int;
+  // print to track if working
   printf("Parent process caught SIGUSR2 with partial sum: %d\n",
          info->si_value.sival_int);
   num_signals++;
 }
 
+/* this method creates the new child process */
 pid_t Fork() {
   pid_t pid;
   if ((pid = fork()) < 0) {
@@ -147,8 +146,11 @@ pid_t Fork() {
   return pid;
 }
 
+/* this method causes the parent process to wait until a desired status is
+ * returned from the child process */
 pid_t Wait(int *status) {
   pid_t pid = wait(status);
+  // print to track if working
   if (pid > 0) {
     if (WIFEXITED(*status)) {
       printf("Child process %d terminated normally with exit status %d\n", pid,
@@ -162,6 +164,8 @@ pid_t Wait(int *status) {
   return pid;
 }
 
+/* this method is not used in the main method, but waits until a specific child
+ * process returns a desired status */
 pid_t Waitpid(pid_t pid, int *status, int options) {
   // options = 0, suspend the parent until child is term, options = WNOHANG,
   // return immediately if none of the child processes has term, options =
@@ -174,8 +178,15 @@ pid_t Waitpid(pid_t pid, int *status, int options) {
   return ret_pid;
 }
 
+/* this method allows the child process to send back its signal */
 int Sigqueue(pid_t pid, int signum,
              union sigval value) { // Sigqueue(getppid(), SIGUSR2, value);
+  // print to track if working
+  fprintf(stderr,
+          "Child process %d sending SIGUSR2 to parent process with the "
+          "partial sum %d\n",
+          getpid(), signum);
+
   int ret = sigqueue(pid, signum, value);
   if (ret < 0) {
     unix_error("sigqueue error");
@@ -183,6 +194,7 @@ int Sigqueue(pid_t pid, int signum,
   return ret;
 }
 
+/* this method intialize a signal mask to exclude all signals */
 int Sigemptyset(sigset_t *set) {
   int ret = sigemptyset(set);
   if (ret < 0) {
@@ -191,6 +203,7 @@ int Sigemptyset(sigset_t *set) {
   return ret;
 }
 
+/* this method initialize a signal mask to include all signals */
 int Sigfillset(sigset_t *set) {
   int ret = sigfillset(set);
   if (ret < 0) {
@@ -199,6 +212,8 @@ int Sigfillset(sigset_t *set) {
   return ret;
 }
 
+/* this method allows the calling process to examine the action to be associated
+ * with a specific signal */
 int Sigaction(int signum, const struct sigaction *new_act,
               struct sigaction *old_act) {
   int ret = sigaction(signum, new_act, old_act);
@@ -208,6 +223,7 @@ int Sigaction(int signum, const struct sigaction *new_act,
   return ret;
 }
 
+/* this method allows the child process to send back its signal */
 int Sigprocmask(int how, const sigset_t *set, sigset_t *oldset) {
   int ret = sigprocmask(how, set, oldset);
   if (ret < 0) {
@@ -216,6 +232,7 @@ int Sigprocmask(int how, const sigset_t *set, sigset_t *oldset) {
   return ret;
 }
 
+/* this method also isn't used, but attempts to write data */
 ssize_t Write(int d, const void *buffer, size_t nbytes) {
   ssize_t ret = write(d, buffer, nbytes);
   if (ret < 0) {
@@ -224,6 +241,7 @@ ssize_t Write(int d, const void *buffer, size_t nbytes) {
   return ret;
 }
 
+/* this method also isn't used, but attempts to read in data */
 ssize_t Read(int d, void *buffer, size_t nbytes) {
   ssize_t ret = read(d, buffer, nbytes);
   if (ret < 0) {
@@ -232,6 +250,7 @@ ssize_t Read(int d, void *buffer, size_t nbytes) {
   return ret;
 }
 
+/* this method handles all signals */
 handler_t *Signal(int signum, handler_t *handler) {
   struct sigaction new_act, old_act;
   new_act.sa_handler = handler;
@@ -244,7 +263,7 @@ handler_t *Signal(int signum, handler_t *handler) {
   return old_act.sa_handler;
 }
 
-/* Wrapper functions for all system calls */
+/* general collect all for errors that may come up */
 void unix_error(const char *msg) {
   fprintf(stderr, "%s: %s\n", msg, strerror(errno));
   exit(0);
